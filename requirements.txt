@@ -1,5 +1,7 @@
+# google-genai is the new unified SDK for Gemini 3 models
+# (replaces the older google-generativeai package)
+google-genai>=1.5.0
 streamlit>=1.35.0
-google-generativeai>=0.7.0
 pandas>=2.0.0
 Pillow>=10.0.0
 requests>=2.31.0

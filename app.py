@@ -1,5 +1,6 @@
 import streamlit as st
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import pandas as pd
 import re
 from PIL import Image
@@ -59,23 +60,43 @@ html, body, [class*="css"] { font-family: 'Syne', sans-serif; }
 }
 .dot-found    { color: #00e5a0; }
 .dot-notfound { color: #ff4d6d; }
+.model-badge {
+    display: inline-block;
+    font-family: 'DM Mono', monospace;
+    font-size: 0.7rem;
+    color: #6b6b8a;
+    background: #1c1c28;
+    border: 1px solid #2a2a3d;
+    border-radius: 20px;
+    padding: 2px 10px;
+    margin-left: 8px;
+    vertical-align: middle;
+}
 </style>
 """, unsafe_allow_html=True)
 
 # ── Header ────────────────────────────────────────────────────────────────────
-st.markdown("## 🔍 CodeScan")
+st.markdown(
+    '## 🔍 CodeScan '
+    '<span class="model-badge">gemini-3-flash-preview</span>',
+    unsafe_allow_html=True,
+)
 st.markdown("Photograph a handwritten 11-digit code to look it up instantly.")
 st.divider()
 
-# ── Load secrets ──────────────────────────────────────────────────────────────
-def get_secret(key, fallback_label):
-    try:
-        return st.secrets[key]
-    except Exception:
-        return None
+# ── Model ID ──────────────────────────────────────────────────────────────────
+MODEL_ID = "gemini-3-flash-preview"
 
-gemini_key   = get_secret("GEMINI_API_KEY", "Gemini API key")
-sheet_url_raw = get_secret("GOOGLE_SHEET_URL", "Google Sheet URL")
+# ── Load secrets ──────────────────────────────────────────────────────────────
+try:
+    gemini_key = st.secrets["GEMINI_API_KEY"]
+except Exception:
+    gemini_key = None
+
+try:
+    sheet_url_raw = st.secrets["GOOGLE_SHEET_URL"]
+except Exception:
+    sheet_url_raw = None
 
 if not gemini_key:
     st.error("❌ `GEMINI_API_KEY` not found in Streamlit secrets.")
@@ -85,28 +106,22 @@ if not sheet_url_raw:
     st.error("❌ `GOOGLE_SHEET_URL` not found in Streamlit secrets.")
     st.stop()
 
-genai.configure(api_key=gemini_key)
+# ── Gemini client (new google-genai SDK) ──────────────────────────────────────
+client = genai.Client(api_key=gemini_key)
 
 # ── Google Sheet loader ───────────────────────────────────────────────────────
 def sheet_to_csv_url(url: str) -> str:
-    """
-    Convert any Google Sheets sharing URL to a CSV export URL.
-    Supports /edit, /view, /pub formats and gid (tab) parameters.
-    """
-    # Extract spreadsheet ID
+    """Convert any Google Sheets sharing URL to a direct CSV export URL."""
     match = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", url)
     if not match:
-        raise ValueError("Could not find a Google Sheets spreadsheet ID in the URL.")
+        raise ValueError("Could not find a spreadsheet ID in the URL.")
     sheet_id = match.group(1)
-
-    # Extract gid (tab ID) if present
     gid_match = re.search(r"[#&?]gid=(\d+)", url)
     gid = gid_match.group(1) if gid_match else "0"
-
     return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
 
 
-@st.cache_data(ttl=300)   # refresh every 5 minutes
+@st.cache_data(ttl=300)  # refresh every 5 minutes
 def load_sheet(url: str) -> pd.DataFrame:
     csv_url = sheet_to_csv_url(url)
     response = requests.get(csv_url, timeout=15)
@@ -115,19 +130,21 @@ def load_sheet(url: str) -> pd.DataFrame:
     return df
 
 
-# Load the sheet silently — show a spinner only on first load
 with st.spinner(""):
     try:
         db = load_sheet(sheet_url_raw)
     except Exception as e:
-        st.error(f"❌ Could not load Google Sheet: {e}\n\nCheck that the sheet is shared as **Anyone with the link can view**.")
+        st.error(
+            f"❌ Could not load Google Sheet: {e}\n\n"
+            "Check that the sheet is shared as **Anyone with the link can view**."
+        )
         st.stop()
 
 # ── Session state ─────────────────────────────────────────────────────────────
 if "history"   not in st.session_state: st.session_state.history   = []
 if "last_code" not in st.session_state: st.session_state.last_code = ""
 
-# ── Camera input ──────────────────────────────────────────────────────────────
+# ── Camera / image input ──────────────────────────────────────────────────────
 st.markdown("### 📷 Scan Code")
 img_file = st.camera_input("Point at the handwritten code and capture")
 
@@ -136,14 +153,18 @@ if img_file is None:
         "Or upload a photo", type=["jpg", "jpeg", "png"], key="photo_upload"
     )
 
-# ── OCR ───────────────────────────────────────────────────────────────────────
+# ── OCR with Gemini 3 Flash Preview ──────────────────────────────────────────
 if img_file:
     image = Image.open(img_file)
     st.image(image, caption="Captured image", use_column_width=True)
 
-    with st.spinner("Reading code with Gemini Vision..."):
+    with st.spinner(f"Reading code with {MODEL_ID}..."):
         try:
-            model  = genai.GenerativeModel("gemini-2.0-flash")
+            # Convert PIL image to bytes for the new SDK
+            img_bytes = io.BytesIO()
+            image.save(img_bytes, format="JPEG")
+            img_bytes.seek(0)
+
             prompt = (
                 "This image contains a handwritten numeric code. "
                 "Extract ONLY the digits. The code should be exactly 11 digits long. "
@@ -151,9 +172,27 @@ if img_file:
                 "If you see multiple codes return the most prominent one. "
                 "If unsure about a digit make your best guess."
             )
-            response = model.generate_content([prompt, image])
-            raw      = response.text.strip()
-            digits   = re.sub(r"\D", "", raw)
+
+            response = client.models.generate_content(
+                model=MODEL_ID,
+                contents=[
+                    types.Part.from_bytes(
+                        data=img_bytes.read(),
+                        mime_type="image/jpeg",
+                    ),
+                    prompt,
+                ],
+                # Use minimal thinking — fast OCR doesn't need deep reasoning
+                config=types.GenerateContentConfig(
+                    thinking_config=types.ThinkingConfig(
+                        thinking_mode="MINIMAL"
+                    )
+                ),
+            )
+
+            raw    = response.text.strip()
+            digits = re.sub(r"\D", "", raw)
+
         except Exception as e:
             st.error(f"Gemini OCR error: {e}")
             digits = ""
@@ -168,9 +207,11 @@ st.markdown("### 🔎 Lookup")
 col1, col2 = st.columns([3, 1])
 with col1:
     search_code = st.text_input(
-        "code", value=st.session_state.last_code,
-        max_chars=20, placeholder="Edit or enter 11-digit code",
-        label_visibility="collapsed"
+        "code",
+        value=st.session_state.last_code,
+        max_chars=20,
+        placeholder="Edit or enter 11-digit code",
+        label_visibility="collapsed",
     )
 with col2:
     search_btn = st.button("Search", use_container_width=True, type="primary")
@@ -188,11 +229,11 @@ def do_lookup(code_raw: str):
 
     if not matches.empty:
         row  = matches.iloc[0]
-        html = f"""
-        <div class="result-found">
-          <div class="result-title-found">✅ Code Found!</div>
-          <div class="code-display">{code}</div>
-        """
+        html = (
+            '<div class="result-found">'
+            f'<div class="result-title-found">✅ Code Found!</div>'
+            f'<div class="code-display">{code}</div>'
+        )
         for k, v in row.items():
             if v:
                 html += f'<div class="data-row"><span class="data-key">{k}:</span> {v}</div>'
@@ -200,16 +241,16 @@ def do_lookup(code_raw: str):
         st.markdown(html, unsafe_allow_html=True)
         st.session_state.history.insert(0, {"code": code, "found": True})
     else:
-        st.markdown(f"""
-        <div class="result-notfound">
-          <div class="result-title-nf">❌ Code Not Found</div>
-          <div class="code-display">{code}</div>
-          <div class="data-row">No record found in the database.</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="result-notfound">'
+            f'<div class="result-title-nf">❌ Code Not Found</div>'
+            f'<div class="code-display">{code}</div>'
+            f'<div class="data-row">No record found in the database.</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
         st.session_state.history.insert(0, {"code": code, "found": False})
 
-    # Keep history to 20 entries
     st.session_state.history = st.session_state.history[:20]
 
 
@@ -223,6 +264,6 @@ if st.session_state.history:
     for item in st.session_state.history:
         dot = '<span class="dot-found">●</span>' if item["found"] else '<span class="dot-notfound">●</span>'
         st.markdown(
-            f'<div class="hist-item">{dot} &nbsp;{item["code"]}</div>',
+            f'<div class="hist-item">{dot}&nbsp;&nbsp;{item["code"]}</div>',
             unsafe_allow_html=True,
         )
