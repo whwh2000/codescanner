@@ -223,9 +223,14 @@ def do_lookup(code_raw: str):
         st.warning("No code to search.")
         return
 
-    first_col = db.columns[0]
-    db_clean  = db[first_col].str.replace(r"[^A-Za-z0-9]", "", regex=True).str.upper()
-    matches   = db[db_clean == code]
+    # Search every column for the code — whichever column matches first wins
+    matches = pd.DataFrame()
+    for col in db.columns:
+        col_clean = db[col].str.replace(r"[^A-Za-z0-9]", "", regex=True).str.upper()
+        found = db[col_clean == code]
+        if not found.empty:
+            matches = found
+            break
 
     if not matches.empty:
         row  = matches.iloc[0]
