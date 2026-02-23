@@ -182,10 +182,10 @@ if img_file:
                     ),
                     prompt,
                 ],
-                # Use minimal thinking — fast OCR doesn't need deep reasoning
+                # "minimal" thinking — fast OCR doesn't need deep reasoning
                 config=types.GenerateContentConfig(
                     thinking_config=types.ThinkingConfig(
-                        thinking_mode="MINIMAL"
+                        thinking_level="minimal"
                     )
                 ),
             )
