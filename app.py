@@ -166,11 +166,11 @@ if img_file:
             img_bytes.seek(0)
 
             prompt = (
-                "This image contains a handwritten numeric code. "
-                "Extract ONLY the digits. The code should be exactly 11 digits long. "
-                "Return ONLY the digits with no spaces, dashes, or other characters. "
-                "If you see multiple codes return the most prominent one. "
-                "If unsure about a digit make your best guess."
+                "This image contains a handwritten alphanumeric code. "
+                "The code is exactly 11 characters long and contains uppercase letters and digits (e.g. MMYQ6KD4D96). "
+                "Extract the full code exactly as written - preserve every letter and digit. "
+                "Return ONLY the 11-character code with no spaces, dashes, punctuation, or explanation. "
+                "If you see multiple codes return the most prominent one. If unsure about a character make your best guess."
             )
 
             response = client.models.generate_content(
@@ -191,7 +191,7 @@ if img_file:
             )
 
             raw    = response.text.strip()
-            digits = re.sub(r"\D", "", raw)
+            digits = re.sub(r"[^A-Za-z0-9]", "", raw).upper()  # keep letters too
 
         except Exception as e:
             st.error(f"Gemini OCR error: {e}")
@@ -218,13 +218,13 @@ with col2:
 
 
 def do_lookup(code_raw: str):
-    code = re.sub(r"\D", "", code_raw)
+    code = re.sub(r"[^A-Za-z0-9]", "", code_raw).upper()
     if not code:
-        st.warning("No digits to search.")
+        st.warning("No code to search.")
         return
 
     first_col = db.columns[0]
-    db_clean  = db[first_col].str.replace(r"\D", "", regex=True)
+    db_clean  = db[first_col].str.replace(r"[^A-Za-z0-9]", "", regex=True).str.upper()
     matches   = db[db_clean == code]
 
     if not matches.empty:
